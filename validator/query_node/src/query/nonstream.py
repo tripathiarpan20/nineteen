@@ -5,7 +5,7 @@ from pydantic import ValidationError
 from core.models import utility_models
 from core.models.payload_models import ImageResponse
 from validator.query_node.src.query_config import Config
-
+from validator.utils.generic import generic_constants as gcst
 from validator.models import Contender
 from fiber.networking.models import NodeWithFernet as Node
 from fiber.validator import client
@@ -13,7 +13,6 @@ from core import task_config as tcfg
 from fiber.logging_utils import get_logger
 from validator.query_node.src import utils
 from validator.utils.redis import redis_constants as rcst
-from validator.utils.generic import generic_utils
 
 logger = get_logger(__name__)
 
@@ -56,7 +55,7 @@ def _extract_response(response: Response, response_model: type[ImageResponse]) -
 
         return formatted_response
     except ValidationError as e:
-        logger.debug(f"Failed to deserialize for some reason: {e}")
+        logger.error(f"Failed to deserialize for some reason: {e}")
         return None
 
 
@@ -70,19 +69,29 @@ async def handle_nonstream_event(
 ) -> None:
     if synthetic_query:
         return
+
+    response_queue = await rcst.get_response_queue_key(job_id)
+    
     if content is not None:
         if isinstance(content, dict):
             content = json.dumps(content)
-        await config.redis_db.publish(
-            f"{rcst.JOB_RESULTS}:{job_id}",
-            generic_utils.get_success_event(content=content, job_id=job_id, status_code=status_code),
-        )
+        event_data = json.dumps({
+            gcst.CONTENT: content,
+            gcst.STATUS_CODE: status_code,
+            gcst.JOB_ID: job_id 
+        })
     else:
-        await config.redis_db.publish(
-            f"{rcst.JOB_RESULTS}:{job_id}",
-            generic_utils.get_error_event(job_id=job_id, error_message=error_message, status_code=status_code),
-        )
-
+        event_data = json.dumps({
+            gcst.ERROR_MESSAGE: error_message or "Failed to process request",
+            gcst.STATUS_CODE: status_code or 500,
+            gcst.JOB_ID: job_id
+        })
+        logger.error(f"Pushing error to queue {response_queue}: {error_message} - {event_data}")
+    
+    try:
+        await config.redis_db.rpush(response_queue, event_data)
+    except Exception as e:
+        logger.error(f"Failed to push response to queue: {e}")
 
 async def query_nonstream(
     config: Config,
@@ -138,7 +147,6 @@ async def query_nonstream(
             config=config, query_result=query_result, contender=contender, synthetic_query=synthetic_query, payload=payload
         )
         return False
-    
 
     if formatted_response is not None:
         query_result = utility_models.QueryResult(
@@ -150,7 +158,6 @@ async def query_nonstream(
             status_code=response.status_code,
             success=True,
         )
-
         logger.info(f"✅ Queried node: {node_id} for task: {contender.task} - time: {response_time}")
         await handle_nonstream_event(
             config, formatted_response.model_dump_json(), synthetic_query, job_id, status_code=response.status_code
