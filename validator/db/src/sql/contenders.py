@@ -282,7 +282,8 @@ async def get_contenders_for_task(connection: Connection, task: str, top_x: int 
     if query_type == gcst.SYNTHETIC:
         return await get_contenders_for_synthetic_task(connection, task, top_x)
     elif query_type == gcst.ORGANIC:
-        return await get_contenders_for_organic_task(connection, task, top_x)
+        #return await get_contenders_for_organic_task(connection, task, top_x)
+        return await get_contenders_for_synthetic_task(connection, task, top_x)
     else:
         raise ValueError(f"No contender selection strategy have been implemented for query type : {query_type}")
     
