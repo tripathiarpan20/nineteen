@@ -85,9 +85,10 @@ async def _calculate_metric_bonuses(metrics: dict[str, list[float]]) -> dict[str
 
 
 async def _calculate_response_time_penalty_multipliers(response_time_penalty_multipliers: dict[str, list[float]]) -> dict[str, float]:
+    average_response_time_penalty_multipliers = {}
     for node_hotkey in response_time_penalty_multipliers.keys():
-        response_time_penalty_multipliers[node_hotkey] = sum(response_time_penalty_multipliers[node_hotkey])
-    return response_time_penalty_multipliers
+        average_response_time_penalty_multipliers[node_hotkey] = sum(response_time_penalty_multipliers[node_hotkey]) / len(response_time_penalty_multipliers[node_hotkey])
+    return average_response_time_penalty_multipliers
 
 async def _calculate_normalised_period_score(psql_db: PSQLDB, task: str, node_hotkey: str) -> tuple[float, float]:
     period_scores = await _get_period_scores(psql_db, task, node_hotkey)
@@ -194,74 +195,72 @@ async def calculate_scores_for_settings_weights(
 
     total_hotkey_scores: dict[str, float] = {}
 
-    try:
-        task_configs = get_task_configs()
-        for task, config in task_configs.items():
-            if not config.enabled:
-                logger.debug(f"Skipping task: {task} as it is not enabled")
-                continue
-            task_weight = config.weight
-            logger.debug(f"Processing task: {task}, weight: {task_weight}\n")
 
-            combined_quality_scores, average_quality_scores, metric_scores = await _process_quality_scores(psql_db, task, netuid)
-            metric_bonuses , average_response_time_penalty_multipliers = metric_scores
-            effective_volumes, normalised_period_scores, period_score_multipliers = await _calculate_effective_volumes_for_task(psql_db, contenders, task, combined_quality_scores)
-        
-            normalised_scores_for_task = await _normalise_effective_volumes_for_task(effective_volumes)
+    task_configs = get_task_configs()
+    for task, config in task_configs.items():
+        if not config.enabled:
+            logger.debug(f"Skipping task: {task} as it is not enabled")
+            continue
+        task_weight = config.weight
+        logger.debug(f"Processing task: {task}, weight: {task_weight}\n")
 
-            for hotkey, score in normalised_scores_for_task.items():
-                total_hotkey_scores[hotkey] = total_hotkey_scores.get(hotkey, 0) + score * task_weight
-                
-                contender = next((c for c in contenders if c.node_hotkey == hotkey and c.task == task), None)
-                
-                if contender:
-                    scores_info_object = ContenderWeightsInfoPostObject(
-                        version_key = ccst.VERSION_KEY,
-                        netuid = netuid,
-                        validator_hotkey=ss58_address,
-                        created_at = datetime.now(timezone.utc),
-                        miner_hotkey=hotkey,
-                        task=task,
-                        average_quality_score=average_quality_scores.get(hotkey, 0),
-                        metric_bonus=metric_bonuses.get(hotkey, 0),
-                        average_response_time_penalty_multiplier=average_response_time_penalty_multipliers.get(hotkey, 1),
-                        combined_quality_score=combined_quality_scores.get(hotkey, 0),
-                        period_score_multiplier=period_score_multipliers.get(hotkey, 0),
-                        normalised_period_score=normalised_period_scores.get(hotkey, 0),
-                        contender_capacity=contender.capacity,
-                        normalised_net_score=score
-                    )
-                    contender_weights_info_objects.append(scores_info_object)
-            logger.debug(f"Completed processing task: {task}")
+        combined_quality_scores, average_quality_scores, metric_scores = await _process_quality_scores(psql_db, task, netuid)
+        metric_bonuses , average_response_time_penalty_multipliers = metric_scores
+        effective_volumes, normalised_period_scores, period_score_multipliers = await _calculate_effective_volumes_for_task(psql_db, contenders, task, combined_quality_scores)
+    
+        normalised_scores_for_task = await _normalise_effective_volumes_for_task(effective_volumes)
 
-        logger.debug("Completed calculation of scores for settings weights")
+        for hotkey, score in normalised_scores_for_task.items():
+            total_hotkey_scores[hotkey] = total_hotkey_scores.get(hotkey, 0) + score * task_weight
+            
+            contender = next((c for c in contenders if c.node_hotkey == hotkey and c.task == task), None)
+            
+            if contender:
+                scores_info_object = ContenderWeightsInfoPostObject(
+                    version_key = ccst.VERSION_KEY,
+                    netuid = netuid,
+                    validator_hotkey=ss58_address,
+                    created_at = datetime.now(timezone.utc),
+                    miner_hotkey=hotkey,
+                    task=task,
+                    average_quality_score=average_quality_scores.get(hotkey, 0),
+                    metric_bonus=metric_bonuses.get(hotkey, 0),
+                    average_response_time_penalty_multiplier=average_response_time_penalty_multipliers.get(hotkey, 1),
+                    combined_quality_score=combined_quality_scores.get(hotkey, 0),
+                    period_score_multiplier=period_score_multipliers.get(hotkey, 0),
+                    normalised_period_score=normalised_period_scores.get(hotkey, 0),
+                    contender_capacity=contender.capacity,
+                    normalised_net_score=score
+                )
+                contender_weights_info_objects.append(scores_info_object)
+        logger.debug(f"Completed processing task: {task}")
 
-        hotkey_to_uid = {contender.node_hotkey: contender.node_id for contender in contenders}
-        total_score = sum(total_hotkey_scores.values())
+    logger.debug("Completed calculation of scores for settings weights")
 
-        node_ids, node_weights = [], []
-        for hotkey, score in total_hotkey_scores.items():
-            node_ids.append(hotkey_to_uid[hotkey])
-            node_weights.append(score / total_score)
-            miner_weight_object = MinerWeightsPostObject(
-                version_key = ccst.VERSION_KEY,
-                netuid = netuid,
-                validator_hotkey=ss58_address,
-                created_at = datetime.now(timezone.utc),
-                miner_hotkey=hotkey,
-                node_weight=score / total_score
-            )
-            miner_weights_objects.append(miner_weight_object)
+    hotkey_to_uid = {contender.node_hotkey: contender.node_id for contender in contenders}
+    total_score = sum(total_hotkey_scores.values())
 
-        await _post_scoring_stats_to_local_db(config_main, contender_weights_info_objects, miner_weights_objects)
-        await _post_scoring_stats_to_nineteen(config_main, contender_weights_info_objects, miner_weights_objects)
-        
-        scoring_stats_to_delete_locally = datetime.now() - timedelta(days=7)
-        async with await config_main.psql_db.connection() as connection:
-            await delete_weights_info_older_than(connection, scoring_stats_to_delete_locally)
-            await delete_miner_weights_older_than(connection, scoring_stats_to_delete_locally)
-    except Exception as e:
-        logger.error(f"Failed to calculate scores for settings weights: {e}")
+    node_ids, node_weights = [], []
+    for hotkey, score in total_hotkey_scores.items():
+        node_ids.append(hotkey_to_uid[hotkey])
+        node_weights.append(score / total_score)
+        miner_weight_object = MinerWeightsPostObject(
+            version_key = ccst.VERSION_KEY,
+            netuid = netuid,
+            validator_hotkey=ss58_address,
+            created_at = datetime.now(timezone.utc),
+            miner_hotkey=hotkey,
+            node_weight=score / total_score
+        )
+        miner_weights_objects.append(miner_weight_object)
+
+    await _post_scoring_stats_to_local_db(config_main, contender_weights_info_objects, miner_weights_objects)
+    await _post_scoring_stats_to_nineteen(config_main, contender_weights_info_objects, miner_weights_objects)
+    
+    scoring_stats_to_delete_locally = datetime.now() - timedelta(days=7)
+    async with await config_main.psql_db.connection() as connection:
+        await delete_weights_info_older_than(connection, scoring_stats_to_delete_locally)
+        await delete_miner_weights_older_than(connection, scoring_stats_to_delete_locally)
 
     return node_ids, node_weights
 
