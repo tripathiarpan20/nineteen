@@ -78,7 +78,7 @@ def load_config() -> Config:
     capacity_to_score_multiplier = float(os.getenv("CAPACITY_TO_SCORE_MULTIPLIER", default_capacity_to_score_multiplier))
     logger.info(f"Capacity to score multiplier: {capacity_to_score_multiplier}")
 
-    httpx_limits = httpx.Limits(max_connections=500, max_keepalive_connections=100)
+    httpx_limits = httpx.Limits(max_connections=600, max_keepalive_connections=500)
     httpx_client = httpx.AsyncClient(limits=httpx_limits)
 
     scoring_period_time_multiplier = float(os.getenv("SCORING_PERIOD_TIME_MULTIPLIER", 1.0))
