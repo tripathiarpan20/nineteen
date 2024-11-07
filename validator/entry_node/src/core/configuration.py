@@ -1,10 +1,10 @@
 import os
+
 from dotenv import load_dotenv
 from typing import TypeVar
 import httpx
 from pydantic import BaseModel
 from redis.asyncio import Redis
-from redis.asyncio.connection import ConnectionPool
 from aiocache import cached
 from validator.db.src.database import PSQLDB
 
@@ -22,7 +22,9 @@ class Config:
     prod: bool
     httpx_client: httpx.AsyncClient
 
-async def create_config() -> Config:
+
+@cached(ttl=60 * 5)
+async def factory_config() -> Config:
     localhost = bool(os.getenv("LOCALHOST", "false").lower() == "true")
     if localhost:
         redis_host = "localhost"
@@ -32,7 +34,6 @@ async def create_config() -> Config:
 
     psql_db = PSQLDB()
     await psql_db.connect()
-
     redis_db = Redis(host=redis_host)
 
     prod = bool(os.getenv("ENV", "prod").lower() == "prod")
@@ -43,11 +44,3 @@ async def create_config() -> Config:
         prod=prod,
         httpx_client=httpx.AsyncClient(),
     )
-
-_config = None
-
-async def factory_config() -> Config:
-    global _config 
-    if not _config:
-        _config = await create_config()
-    return _config
