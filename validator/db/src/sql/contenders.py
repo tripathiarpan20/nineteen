@@ -158,70 +158,152 @@ async def get_contenders_for_synthetic_task(connection: Connection, task: str, t
 
 async def get_contenders_for_organic_task(connection: Connection, task: str, top_x: int = 5) -> list[Contender]:
     """
-    Select contenders using round-robin with dedicated tracking fields.
-    Uses new columns for better load distribution metrics.
+    Load-adaptive contender selection that switches between quality-focused and pure load balancing modes 
+    based on system load.
     """
-    rows = await connection.fetch(
+    # First check current load metrics
+    load_info = await connection.fetchrow(
         f"""
-        WITH viable_contenders AS (
+        SELECT 
+            COUNT(DISTINCT node_hotkey) as active_nodes,
+            SUM(CASE WHEN updated_at > NOW() - INTERVAL '10 seconds' THEN 1 ELSE 0 END) as recent_requests,
+            AVG(consumed_capacity::float / NULLIF(capacity, 0)) as avg_capacity_usage
+        FROM {dcst.CONTENDERS_TABLE}
+        WHERE task = $1
+        AND capacity > 0
+        """,
+        task
+    )
+
+    active_nodes = load_info['active_nodes'] or 0
+    recent_requests = load_info['recent_requests'] or 0
+    avg_capacity_usage = load_info['avg_capacity_usage'] or 0
+
+    # If we're under high load, switch to pure load balancing mode
+    high_load = recent_requests > active_nodes * 0.5 or avg_capacity_usage > 0.7
+
+    if high_load:
+        logger.debug("System under high load - using pure load balancing mode")
+        rows = await connection.fetch(
+            f"""
+            WITH base_contenders AS (
+                SELECT 
+                    c.{dcst.CONTENDER_ID},
+                    c.{dcst.NODE_HOTKEY},
+                    c.{dcst.NODE_ID},
+                    c.{dcst.TASK},
+                    c.{dcst.RAW_CAPACITY},
+                    c.{dcst.CAPACITY_TO_SCORE},
+                    c.{dcst.CONSUMED_CAPACITY},
+                    c.{dcst.TOTAL_REQUESTS_MADE},
+                    c.{dcst.REQUESTS_429},
+                    c.{dcst.REQUESTS_500},
+                    c.{dcst.CAPACITY},
+                    c.{dcst.PERIOD_SCORE},
+                    c.{dcst.NETUID},
+                    c.{dcst.UPDATED_AT},
+                    -- Calculate time since last use
+                    EXTRACT(EPOCH FROM (NOW() - c.{dcst.UPDATED_AT})) as seconds_since_update,
+                    -- Calculate recent error rate
+                    CASE 
+                        WHEN c.{dcst.TOTAL_REQUESTS_MADE} > 0 THEN 
+                            (c.{dcst.REQUESTS_429} + c.{dcst.REQUESTS_500})::float / 
+                            NULLIF(c.{dcst.TOTAL_REQUESTS_MADE}, 0)
+                        ELSE 0
+                    END as error_rate
+                FROM {dcst.CONTENDERS_TABLE} c
+                JOIN {dcst.NODES_TABLE} n ON c.{dcst.NODE_ID} = n.{dcst.NODE_ID} 
+                    AND c.{dcst.NETUID} = n.{dcst.NETUID}
+                WHERE c.{dcst.TASK} = $1
+                AND c.{dcst.CAPACITY} > 0
+                AND n.{dcst.SYMMETRIC_KEY_UUID} IS NOT NULL
+            ),
+            ranked_contenders AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        ORDER BY 
+                            -- Prioritize nodes that haven't been used recently
+                            seconds_since_update DESC,
+                            -- Then consider error rate as secondary factor
+                            error_rate ASC,
+                            -- Add some randomization to spread load
+                            random()
+                    ) as rank
+                FROM base_contenders
+                WHERE
+                    -- Basic availability checks
+                    error_rate < 0.3
+                    -- Ensure some cooldown between requests
+                    AND seconds_since_update > 1
+            )
+            SELECT * FROM ranked_contenders
+            LIMIT $2 * 2
+            """,
+            task,
+            top_x
+        )
+    else:
+        # Under normal load, use quality-aware selection
+        rows = await connection.fetch(
+            f"""
+            WITH latest_stats AS (
+                SELECT DISTINCT ON (node_hotkey, task)
+                    node_hotkey,
+                    task,
+                    {dcst.COLUMN_NORMALISED_NET_SCORE} as performance_score
+                FROM {dcst.CONTENDERS_WEIGHTS_STATS_TABLE}
+                WHERE task = $1
+                ORDER BY node_hotkey, task, created_at DESC
+            )
             SELECT 
-                c.*,
-                -- Calculate load and health metrics
+                c.{dcst.CONTENDER_ID},
+                c.{dcst.NODE_HOTKEY},
+                c.{dcst.NODE_ID},
+                c.{dcst.TASK},
+                c.{dcst.RAW_CAPACITY},
+                c.{dcst.CAPACITY_TO_SCORE},
+                c.{dcst.CONSUMED_CAPACITY},
+                c.{dcst.TOTAL_REQUESTS_MADE},
+                c.{dcst.REQUESTS_429},
+                c.{dcst.REQUESTS_500},
+                c.{dcst.CAPACITY},
+                c.{dcst.PERIOD_SCORE},
+                c.{dcst.NETUID},
+                s.performance_score * 
                 CASE 
-                    WHEN c.{dcst.TOTAL_REQUESTS_MADE} > 0 THEN 
-                        (c.{dcst.REQUESTS_429} + c.{dcst.REQUESTS_500})::float / 
-                        NULLIF(c.{dcst.TOTAL_REQUESTS_MADE}, 0)
-                    ELSE 0
-                END as error_rate
+                    WHEN c.{dcst.CONSUMED_CAPACITY}::float / NULLIF(c.{dcst.CAPACITY}, 0) > 0.8 THEN 0.2
+                    WHEN c.{dcst.CONSUMED_CAPACITY}::float / NULLIF(c.{dcst.CAPACITY}, 0) > 0.5 THEN 0.5
+                    ELSE 1.0
+                END as adjusted_score
             FROM {dcst.CONTENDERS_TABLE} c
             JOIN {dcst.NODES_TABLE} n ON c.{dcst.NODE_ID} = n.{dcst.NODE_ID} 
                 AND c.{dcst.NETUID} = n.{dcst.NETUID}
+            JOIN latest_stats s ON c.{dcst.NODE_HOTKEY} = s.node_hotkey 
+                AND c.{dcst.TASK} = s.task
             WHERE c.{dcst.TASK} = $1
             AND c.{dcst.CAPACITY} > 0
             AND n.{dcst.SYMMETRIC_KEY_UUID} IS NOT NULL
-        ),
-        healthy_contenders AS (
-            SELECT *
-            FROM viable_contenders
-            WHERE error_rate < 0.3
-            AND {dcst.CAPACITY} - {dcst.CONSUMED_CAPACITY} > 0
-            -- Skip if timeout recently
-            AND (last_timeout_at IS NULL OR NOW() - last_timeout_at > interval '10 seconds')
-            -- Skip if too many recent timeouts
-            AND timeouts_last_minute < 10
-            -- Skip if too many recent queries
-            AND organic_queries_last_minute < 30
-        ),
-        ranked_contenders AS (
-            SELECT 
-                *,
-                ROW_NUMBER() OVER (
-                    ORDER BY 
-                        -- First by last query time
-                        last_organic_query_at ASC NULLS FIRST,
-                        -- Then by recent load
-                        organic_queries_last_minute ASC,
-                        -- Then by recent timeouts
-                        timeouts_last_minute ASC
-                ) as usage_rank
-            FROM healthy_contenders
+            AND (NOW() - c.{dcst.UPDATED_AT}) > interval '2 seconds'
+            ORDER BY adjusted_score DESC
+            LIMIT $2 * 2
+            """,
+            task,
+            top_x
         )
-        SELECT * 
-        FROM ranked_contenders
-        WHERE usage_rank <= $2
-        ORDER BY usage_rank
-        """,
-        task,
-        top_x
-    )
 
-    if not rows or len(rows) < top_x:
-        logger.debug(f"Not enough viable contenders ({len(rows) if rows else 0} < {top_x}), falling back to synthetic")
+    if not rows:
+        logger.debug(f"No valid contenders found for organic query with task {task}, falling back to synthetic queries logic.")
         return await get_contenders_for_synthetic_task(connection, task, top_x)
 
-    # Convert rows to contenders, maintaining order
-    contenders = [
-        Contender(
+    # Convert rows to contenders
+    contenders = []
+    seen_hotkeys = set()
+    
+    for row in rows:
+        if row[dcst.NODE_HOTKEY] in seen_hotkeys:
+            continue
+            
+        contender = Contender(
             id=row[dcst.CONTENDER_ID],
             node_hotkey=row[dcst.NODE_HOTKEY],
             node_id=row[dcst.NODE_ID],
@@ -236,46 +318,31 @@ async def get_contenders_for_organic_task(connection: Connection, task: str, top
             period_score=row[dcst.PERIOD_SCORE],
             netuid=row[dcst.NETUID]
         )
-        for row in rows[:top_x]
-    ]
+        contenders.append(contender)
+        seen_hotkeys.add(row[dcst.NODE_HOTKEY])
+        
+        if len(contenders) >= top_x:
+            break
 
-    # Update tracking fields for selected contenders
+    # Update timestamps for selected contenders
     if contenders:
         await connection.execute(
             f"""
             UPDATE {dcst.CONTENDERS_TABLE}
-            SET last_organic_query_at = NOW(),
-                organic_queries_last_minute = 
-                    CASE 
-                        -- Reset counter if it's been more than a minute
-                        WHEN NOW() - last_organic_query_at > interval '1 minute' 
-                        THEN 1
-                        -- Otherwise increment
-                        ELSE organic_queries_last_minute + 1
-                    END
+            SET {dcst.UPDATED_AT} = NOW()
             WHERE {dcst.CONTENDER_ID} = ANY($1)
             """,
             [c.id for c in contenders]
         )
 
-    logger.debug(f"Selected {len(contenders)} contenders using round-robin for task {task}")
-    return contenders
-async def update_contender_timeout(psql_db: PSQLDB, contender: Contender) -> None:
-    async with await psql_db.connection() as connection:
-        await connection.execute(
-            f"""
-            UPDATE {dcst.CONTENDERS_TABLE}
-            SET last_timeout_at = NOW(),
-                timeouts_last_minute = 
-                    CASE 
-                        WHEN NOW() - last_timeout_at > interval '1 minute' 
-                        THEN 1
-                        ELSE timeouts_last_minute + 1
-                    END
-            WHERE {dcst.CONTENDER_ID} = $1
-            """,
-            contender.id,
-        )
+    if len(contenders) < top_x:
+        logger.debug(f"Not enough unique organic contenders ({len(contenders)} < {top_x}), falling back to synthetic queries logic")
+        return await get_contenders_for_synthetic_task(connection, task, top_x)
+
+    random.shuffle(contenders)  # Final shuffle to prevent patterns
+    logger.debug(f"Selected {len(contenders)} unique contenders for task {task} (high_load={high_load})")
+    return contenders[:top_x]
+
 
 async def get_contenders_for_task(connection: Connection, task: str, top_x: int = 5, 
                                   query_type: str = gcst.SYNTHETIC) -> list[Contender]:
