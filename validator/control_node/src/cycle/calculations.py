@@ -321,33 +321,37 @@ async def calculate_scores_for_settings_weights(
         logger.error(f"Error when calculating scores for settings weights: {e}")
         return [], []
 
-    hotkey_to_uid = {
-        contender.node_hotkey: contender.node_id for contender in contenders
-    }
-    total_score = sum(total_hotkey_scores.values())
+    try:
+        hotkey_to_uid = {
+            contender.node_hotkey: contender.node_id for contender in contenders
+        }
+        total_score = sum(total_hotkey_scores.values())
 
-    node_ids, node_weights = [], []
-    for hotkey, score in total_hotkey_scores.items():
-        node_ids.append(hotkey_to_uid[hotkey])
-        node_weights.append(score / total_score)
-        miner_weight_object = MinerWeightsPostObject(
-            version_key=ccst.VERSION_KEY,
-            netuid=netuid,
-            validator_hotkey=ss58_address,
-            created_at=datetime.now(timezone.utc),
-            miner_hotkey=hotkey,
-            node_weight=score / total_score,
-        )
-        miner_weights_objects.append(miner_weight_object)
+        node_ids, node_weights = [], []
+        for hotkey, score in total_hotkey_scores.items():
+            node_ids.append(hotkey_to_uid[hotkey])
+            node_weights.append(score / total_score)
+            miner_weight_object = MinerWeightsPostObject(
+                version_key=ccst.VERSION_KEY,
+                netuid=netuid,
+                validator_hotkey=ss58_address,
+                created_at=datetime.now(timezone.utc),
+                miner_hotkey=hotkey,
+                node_weight=score / total_score,
+            )
+            miner_weights_objects.append(miner_weight_object)
 
-    if not mock:
-        await _post_scoring_stats_to_local_db(config_main, contender_weights_info_objects, miner_weights_objects)
-        await _post_scoring_stats_to_nineteen(config_main, contender_weights_info_objects, miner_weights_objects)
-        
-        scoring_stats_to_delete_locally = datetime.now() - timedelta(days=7)
-        async with await config_main.psql_db.connection() as connection:
-            await delete_weights_info_older_than(connection, scoring_stats_to_delete_locally)
-            await delete_miner_weights_older_than(connection, scoring_stats_to_delete_locally)
+        if not mock:
+            await _post_scoring_stats_to_local_db(config_main, contender_weights_info_objects, miner_weights_objects)
+            await _post_scoring_stats_to_nineteen(config_main, contender_weights_info_objects, miner_weights_objects)
+            
+            scoring_stats_to_delete_locally = datetime.now() - timedelta(days=7)
+            async with await config_main.psql_db.connection() as connection:
+                await delete_weights_info_older_than(connection, scoring_stats_to_delete_locally)
+                await delete_miner_weights_older_than(connection, scoring_stats_to_delete_locally)
+    except Exception as e:
+        logger.error(f"Error when posting scores for settings weights: {e}")
+        return [], []
 
     return node_ids, node_weights
 
