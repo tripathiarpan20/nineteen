@@ -1,17 +1,31 @@
-from httpx import Client
+from httpx import Client, RequestError, HTTPStatusError
 from core import constants as ccst
 from core.models import config_models as cmodels
 from fiber.logging_utils import get_logger
+import time 
 
 logger = get_logger(__name__)
 
+MAX_RETRIES = 3
 
 def fetch_voted_weights() -> dict[str, float]:
     url = ccst.BASE_NINETEEN_API_URL + "v1/weights"
-    with Client() as client:
-        response = client.get(url)
-        response.raise_for_status()
-        return response.json()
+    
+    retries = 0
+    while retries < MAX_RETRIES:
+        try:
+            with Client() as client:
+                response = client.get(url)
+                response.raise_for_status()
+                return response.json()
+        except (RequestError, HTTPStatusError) as e:
+            logger.error(f"Request failed: {e}. Attempt {retries + 1}/{MAX_RETRIES}")
+            retries += 1
+            if retries < MAX_RETRIES:
+                time.sleep(2)
+            else:
+                logger.error("Max retries reached for fetching weights")
+                raise
 
 
 def get_updated_task_config_with_voted_weights(
