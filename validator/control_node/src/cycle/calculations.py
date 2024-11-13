@@ -90,7 +90,7 @@ async def _get_period_scores(
 
 async def _calculate_metrics_and_quality_score(
     psql_db: PSQLDB, task: str, netuid: int
-) -> tuple[dict[str, float], dict[str, float]]:
+) -> tuple[dict[str, float], dict[str, float], dict[str, float] ]:
     reward_datas: list[RewardData] = await _get_reward_datas(psql_db, task, netuid)
 
     metrics = {}
@@ -162,7 +162,7 @@ def _calculate_hotkey_effective_volume_for_task(
 ) -> float:
     return combined_quality_score * normalised_period_score * volume
 
-async def _process_quality_scores(psql_db: PSQLDB, task: str, netuid: int) -> tuple[dict[str, float], dict[str, float], tuple[dict[str, float] , dict[str, float] ]]:
+async def _process_quality_scores(psql_db: PSQLDB, task: str, netuid: int) -> tuple[dict[str, float], dict[str, float], dict[str, float], tuple[dict[str, float] , dict[str, float] ]]:
     metrics, quality_scores, response_time_penalty_multipliers = await _calculate_metrics_and_quality_score(psql_db, task, netuid)
     average_weighted_quality_scores = {
         node_hotkey: sum(score**1.5 for score in scores) / len(scores)
@@ -175,8 +175,12 @@ async def _process_quality_scores(psql_db: PSQLDB, task: str, netuid: int) -> tu
         * (1 + metric_bonuses[node_hotkey])
         for node_hotkey in metrics
     }
-    return combined_quality_scores, average_weighted_quality_scores, (metric_bonuses , average_response_time_penalty_multipliers)
-
+    return (
+        combined_quality_scores,
+        average_weighted_quality_scores,
+        metrics,
+        (metric_bonuses, average_response_time_penalty_multipliers)
+    )
 
 async def _calculate_effective_volumes_for_task(
     psql_db: PSQLDB,
@@ -268,7 +272,7 @@ async def calculate_scores_for_settings_weights(
         task_weight = config.weight
         logger.debug(f"Processing task: {task}, weight: {task_weight}\n")
 
-        combined_quality_scores, average_quality_scores, metric_scores = await _process_quality_scores(psql_db, task, netuid)
+        combined_quality_scores, average_quality_scores, metrics, metric_scores = await _process_quality_scores(psql_db, task, netuid)
         metric_bonuses , average_response_time_penalty_multipliers = metric_scores
         effective_volumes, normalised_period_scores, period_score_multipliers = await _calculate_effective_volumes_for_task(psql_db, contenders, task, combined_quality_scores)
     
