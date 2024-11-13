@@ -253,68 +253,73 @@ async def calculate_scores_for_settings_weights(
     contenders: list[Contender],
     mock: bool = False
 ) -> tuple[list[int], list[float]]:
-    psql_db = config_main.psql_db
-    netuid = config_main.netuid
-    ss58_address = None
-    while ss58_address is None:
-        ss58_address = await get_vali_ss58_address(psql_db, netuid)
+        
+    try:
+        psql_db = config_main.psql_db
+        netuid = config_main.netuid
+        ss58_address = None
+        while ss58_address is None:
+            ss58_address = await get_vali_ss58_address(psql_db, netuid)
 
-    contender_weights_info_objects: list[ContenderWeightsInfoPostObject] = []
-    miner_weights_objects: list[MinerWeightsPostObject] = []
+        contender_weights_info_objects: list[ContenderWeightsInfoPostObject] = []
+        miner_weights_objects: list[MinerWeightsPostObject] = []
 
-    total_hotkey_scores: dict[str, float] = {}
+        total_hotkey_scores: dict[str, float] = {}
 
 
-    task_configs = get_task_configs()
-    for task, config in task_configs.items():
-        if not config.enabled:
-            logger.debug(f"Skipping task: {task} as it is not enabled")
-            continue
-        task_weight = config.weight
-        logger.debug(f"Processing task: {task}, weight: {task_weight}\n")
+        task_configs = get_task_configs()
+        for task, config in task_configs.items():
+            if not config.enabled:
+                logger.debug(f"Skipping task: {task} as it is not enabled")
+                continue
+            task_weight = config.weight
+            logger.debug(f"Processing task: {task}, weight: {task_weight}\n")
 
-        combined_quality_scores, average_quality_scores, metrics, metric_scores = await _process_quality_scores(psql_db, task, netuid)
-        metric_bonuses , average_response_time_penalty_multipliers = metric_scores
-        effective_volumes, normalised_period_scores, period_score_multipliers = await _calculate_effective_volumes_for_task(psql_db, contenders, task, combined_quality_scores)
-    
-        normalised_scores_for_task = await _normalise_effective_volumes_for_task(effective_volumes)
+            combined_quality_scores, average_quality_scores, metrics, metric_scores = await _process_quality_scores(psql_db, task, netuid)
+            metric_bonuses , average_response_time_penalty_multipliers = metric_scores
+            effective_volumes, normalised_period_scores, period_score_multipliers = await _calculate_effective_volumes_for_task(psql_db, contenders, task, combined_quality_scores)
+        
+            normalised_scores_for_task = await _normalise_effective_volumes_for_task(effective_volumes)
 
-        for hotkey, score in normalised_scores_for_task.items():
-            total_hotkey_scores[hotkey] = (
-                total_hotkey_scores.get(hotkey, 0) + score * task_weight
-            )
-
-            contender = next(
-                (c for c in contenders if c.node_hotkey == hotkey and c.task == task),
-                None,
-            )
-
-            if contender:
-                hotkey_metrics = metrics.get(hotkey, [])
-                average_metric = (
-                    sum(hotkey_metrics) / len(hotkey_metrics) if hotkey_metrics else 0
+            for hotkey, score in normalised_scores_for_task.items():
+                total_hotkey_scores[hotkey] = (
+                    total_hotkey_scores.get(hotkey, 0) + score * task_weight
                 )
-                scores_info_object = ContenderWeightsInfoPostObject(
-                    version_key=ccst.VERSION_KEY,
-                    netuid=netuid,
-                    validator_hotkey=ss58_address,
-                    created_at=datetime.now(timezone.utc),
-                    miner_hotkey=hotkey,
-                    task=task,
-                    average_quality_score=average_quality_scores.get(hotkey, 0),
-                    metric_bonus=metric_bonuses.get(hotkey, 0),
-                    average_response_time_penalty_multiplier=average_response_time_penalty_multipliers.get(hotkey, 1),
-                    metric=average_metric,
-                    combined_quality_score=combined_quality_scores.get(hotkey, 0),
-                    period_score_multiplier=period_score_multipliers.get(hotkey, 0),
-                    normalised_period_score=normalised_period_scores.get(hotkey, 0),
-                    contender_capacity=contender.capacity,
-                    normalised_net_score=score,
-                )
-                contender_weights_info_objects.append(scores_info_object)
-        logger.debug(f"Completed processing task: {task}")
 
-    logger.debug("Completed calculation of scores for settings weights")
+                contender = next(
+                    (c for c in contenders if c.node_hotkey == hotkey and c.task == task),
+                    None,
+                )
+
+                if contender:
+                    hotkey_metrics = metrics.get(hotkey, [])
+                    average_metric = (
+                        sum(hotkey_metrics) / len(hotkey_metrics) if hotkey_metrics else 0
+                    )
+                    scores_info_object = ContenderWeightsInfoPostObject(
+                        version_key=ccst.VERSION_KEY,
+                        netuid=netuid,
+                        validator_hotkey=ss58_address,
+                        created_at=datetime.now(timezone.utc),
+                        miner_hotkey=hotkey,
+                        task=task,
+                        average_quality_score=average_quality_scores.get(hotkey, 0),
+                        metric_bonus=metric_bonuses.get(hotkey, 0),
+                        average_response_time_penalty_multiplier=average_response_time_penalty_multipliers.get(hotkey, 1),
+                        metric=average_metric,
+                        combined_quality_score=combined_quality_scores.get(hotkey, 0),
+                        period_score_multiplier=period_score_multipliers.get(hotkey, 0),
+                        normalised_period_score=normalised_period_scores.get(hotkey, 0),
+                        contender_capacity=contender.capacity,
+                        normalised_net_score=score,
+                    )
+                    contender_weights_info_objects.append(scores_info_object)
+            logger.debug(f"Completed processing task: {task}")
+
+        logger.debug("Completed calculation of scores for settings weights")
+    except Exception as e:
+        logger.error(f"Error when calculating scores for settings weights: {e}")
+        return [], []
 
     hotkey_to_uid = {
         contender.node_hotkey: contender.node_id for contender in contenders
