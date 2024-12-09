@@ -28,7 +28,7 @@ from validator.models import Contender
 from validator.utils.post.nineteen import DataTypeToPost, ValidatorInfoPostBody, post_to_nineteen_ai
 from core.task_config import get_public_task_configs
 from core import constants as ccst
-from validator.db.src.sql.rewards_and_scores import delete_task_data_older_than_date
+from validator.db.src.sql.rewards_and_scores import delete_reward_data_older_than
 
 logger = get_logger(__name__)
 
@@ -78,12 +78,12 @@ async def get_nodes_and_contenders(config: Config) -> list[Contender] | None:
     return contenders
 
 
-async def _remove_task_data(config: Config):
+async def _remove_stale_reward_data(config: Config):
     # NOTE: remove on next update
     # For a short time after this update, delete task data since the NSFW flag has changed.
-    if datetime.now() < datetime(2024, 10, 14, 15):
+    if datetime.now() < datetime(2024, 12, 9, 19, 0, 0):
         async with await config.psql_db.connection() as connection:
-            await delete_task_data_older_than_date(connection, datetime.now())
+            await delete_reward_data_older_than(connection, datetime.now())
 
 
 async def main(config: Config) -> None:
@@ -100,7 +100,7 @@ async def main(config: Config) -> None:
         tasks = [schedule_synthetics_until_done(config)]
 
     while True:
-        await _remove_task_data(config)
+        await _remove_stale_reward_data(config)
         await asyncio.gather(*tasks)
         contenders = await get_nodes_and_contenders(config)
         if contenders is None or len(contenders) == 0:
