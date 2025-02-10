@@ -17,6 +17,9 @@ CHAT_LLAMA_3_2_3B_COMP = "chat-llama-3-2-3b-comp"
 CHAT_LLAMA_3_1_70B_COMP = "chat-llama-3-1-70b-comp"
 CHAT_LLAMA_3_1_8B_COMP = "chat-llama-3-1-8b-comp"
 
+CHAT_DEEPSEEK_R1_QWEN_32B = "chat-deepseek-r1-qwen-32b"
+CHAT_DEEPSEEK_R1_QWEN_32B_COMP = "chat-deepseek-r1-qwen-32b-comp"
+
 CHAT_ROGUE_ROSE_103B_COMP = "chat-rogue-rose-103b-comp"
 
 PROTEUS_TEXT_TO_IMAGE = "proteus-text-to-image"
@@ -54,7 +57,7 @@ def task_configs_factory() -> dict[str, cmodels.FullTaskConfig]:
                 func="generate_chat_synthetic", kwargs={"model": CHAT_LLAMA_3_2_3B}
             ),
             endpoint=cmodels.Endpoints.chat_completions.value,
-            volume_to_requests_conversion=300,
+            volume_to_requests_conversion=250,
             is_stream=True,
             weight=0.025,
             timeout=2,
@@ -88,7 +91,7 @@ def task_configs_factory() -> dict[str, cmodels.FullTaskConfig]:
                 func="generate_chat_comp_synthetic", kwargs={"model": CHAT_LLAMA_3_2_3B_COMP}
             ),
             endpoint=cmodels.Endpoints.completions.value,
-            volume_to_requests_conversion=300,
+            volume_to_requests_conversion=250,
             is_stream=True,
             weight=0.025,
             timeout=2,
@@ -122,9 +125,9 @@ def task_configs_factory() -> dict[str, cmodels.FullTaskConfig]:
                 func="generate_chat_synthetic", kwargs={"model": CHAT_LLAMA_3_1_70B}
             ),
             endpoint=cmodels.Endpoints.chat_completions.value,
-            volume_to_requests_conversion=300,
+            volume_to_requests_conversion=400,
             is_stream=True,
-            weight=0.10,
+            weight=0.075,
             timeout=2,
             enabled=True,
             architecture={
@@ -156,9 +159,9 @@ def task_configs_factory() -> dict[str, cmodels.FullTaskConfig]:
                 func="generate_chat_comp_synthetic", kwargs={"model": CHAT_LLAMA_3_1_70B_COMP}
             ),
             endpoint=cmodels.Endpoints.completions.value,
-            volume_to_requests_conversion=300,
+            volume_to_requests_conversion=400,
             is_stream=True,
-            weight=0.10,
+            weight=0.075,
             timeout=2,
             enabled=True,
             architecture={
@@ -192,7 +195,7 @@ def task_configs_factory() -> dict[str, cmodels.FullTaskConfig]:
             endpoint=cmodels.Endpoints.chat_completions.value,
             volume_to_requests_conversion=300,
             is_stream=True,
-            weight=0.075,
+            weight=0.05,
             timeout=2,
             enabled=True,
             architecture={
@@ -226,12 +229,80 @@ def task_configs_factory() -> dict[str, cmodels.FullTaskConfig]:
             endpoint=cmodels.Endpoints.completions.value,
             volume_to_requests_conversion=300,
             is_stream=True,
-            weight=0.075,
+            weight=0.05,
             timeout=2,
             enabled=True,
             architecture={
                 "modality": "text->text",
                 "instruct_type": "llama3"
+            }
+        ),
+        CHAT_DEEPSEEK_R1_QWEN_32B: cmodels.FullTaskConfig(
+            task=CHAT_DEEPSEEK_R1_QWEN_32B,
+            display_name="Deepseek R1 Qwen 32B",
+            description="Deepseek R1 Qwen 32B is a distillation of [Deepseek R1](/deepseek-ai/DeepSeek-R1). Check out the latest license under [Deepseek R1 page](https://huggingface.co/deepseek-ai/DeepSeek-R1).",
+            task_type=cmodels.TaskType.TEXT,
+            max_capacity=60_000,
+            orchestrator_server_config=cmodels.OrchestratorServerConfig(
+                server_needed=cmodels.ServerType.LLM,
+                load_model_config={
+                    "model": "casperhansen/deepseek-r1-distill-qwen-32b-awq",
+                    "half_precision": True,
+                    "tokenizer": "casperhansen/deepseek-r1-distill-qwen-32b-awq",
+                    "max_model_len": 16_000,
+                    "gpu_memory_utilization": 0.57,
+                    "eos_token_id": 151643
+                },
+                endpoint=cmodels.Endpoints.chat_completions.value,
+                checking_function="check_text_result",
+                task=CHAT_DEEPSEEK_R1_QWEN_32B,
+            ),
+            synthetic_generation_config=cmodels.SyntheticGenerationConfig(
+                func="generate_chat_synthetic", kwargs={"model": CHAT_DEEPSEEK_R1_QWEN_32B}
+            ),
+            endpoint=cmodels.Endpoints.chat_completions.value,
+            volume_to_requests_conversion=500,
+            is_stream=True,
+            weight=0.075,
+            timeout=2,
+            enabled=True,
+            architecture={
+                "modality": "text->text",
+                "instruct_type": "deepseek r1"
+            }
+        ),
+        CHAT_DEEPSEEK_R1_QWEN_32B_COMP: cmodels.FullTaskConfig(
+            task=CHAT_DEEPSEEK_R1_QWEN_32B_COMP,
+            display_name="Deepseek R1 Qwen 32B Completions",
+            description="Deepseek R1 Qwen 32B is a distillation of [Deepseek R1](/deepseek-ai/DeepSeek-R1). Check out the latest license under [Deepseek R1 page](https://huggingface.co/deepseek-ai/DeepSeek-R1).",
+            task_type=cmodels.TaskType.TEXT,
+            max_capacity=60_000,
+            orchestrator_server_config=cmodels.OrchestratorServerConfig(
+                server_needed=cmodels.ServerType.LLM,
+                load_model_config={
+                    "model": "casperhansen/deepseek-r1-distill-qwen-32b-awq",
+                    "half_precision": True,
+                    "tokenizer": "casperhansen/deepseek-r1-distill-qwen-32b-awq",
+                    "max_model_len": 16_000,
+                    "gpu_memory_utilization": 0.57,
+                    "eos_token_id": 151643
+                },
+                endpoint=cmodels.Endpoints.completions.value,
+                checking_function="check_text_result",
+                task=CHAT_DEEPSEEK_R1_QWEN_32B_COMP,
+            ),
+            synthetic_generation_config=cmodels.SyntheticGenerationConfig(
+                func="generate_chat_comp_synthetic", kwargs={"model": CHAT_DEEPSEEK_R1_QWEN_32B_COMP}
+            ),
+            endpoint=cmodels.Endpoints.completions.value,
+            volume_to_requests_conversion=500,
+            is_stream=True,
+            weight=0.075,
+            timeout=2,
+            enabled=True,
+            architecture={
+                "modality": "text->text",
+                "instruct_type": "deepseek r1"
             }
         ),
         CHAT_ROGUE_ROSE_103B_COMP: cmodels.FullTaskConfig(
@@ -256,9 +327,9 @@ def task_configs_factory() -> dict[str, cmodels.FullTaskConfig]:
             ),
             synthetic_generation_config=cmodels.SyntheticGenerationConfig(func="generate_chat_comp_synthetic", kwargs={"model": CHAT_ROGUE_ROSE_103B_COMP}),
             endpoint=cmodels.Endpoints.completions.value,
-            volume_to_requests_conversion=300,
+            volume_to_requests_conversion=600,
             is_stream=True,
-            weight=0.10,
+            weight=0.075,
             timeout=2,
             enabled=True,
             architecture={
@@ -286,7 +357,7 @@ def task_configs_factory() -> dict[str, cmodels.FullTaskConfig]:
             endpoint=cmodels.Endpoints.text_to_image.value,
             volume_to_requests_conversion=10,
             is_stream=False,
-            weight=0.1,
+            weight=0.075,
             timeout=5,
             enabled=True,
             model_info={"model": "dataautogpt3/ProteusV0.4-Lightning", cst.MIN_STEPS: 6, cst.MAX_STEPS: 12},
