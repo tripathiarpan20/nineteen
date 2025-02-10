@@ -7,6 +7,7 @@ from opentelemetry import metrics
 from redis.asyncio import Redis
 from fiber.logging_utils import get_logger
 from fastapi.routing import APIRouter
+from core.constants import CHARACTER_TO_TOKEN_CONVERSION
 from validator.entry_node.src.core.configuration import Config
 from validator.entry_node.src.core.dependencies import get_config
 from validator.entry_node.src.core.middleware import verify_api_key_rate_limit
@@ -21,7 +22,6 @@ from validator.entry_node.src import utils
 
 logger = get_logger(__name__)
 
-
 COUNTER_TEXT_GENERATION_ERROR = metrics.get_meter(__name__).create_counter("validator.entry_node.text.error")
 COUNTER_TEXT_GENERATION_SUCCESS = metrics.get_meter(__name__).create_counter("validator.entry_node.text.success")
 GAUGE_TOKENS_PER_SEC = metrics.get_meter(__name__).create_gauge(
@@ -31,6 +31,10 @@ GAUGE_TOKENS_PER_SEC = metrics.get_meter(__name__).create_gauge(
 GAUGE_TOKENS = metrics.get_meter(__name__).create_gauge(
     "validator.entry_node.text.tokens",
     description="Total tokens for LLM streaming for an organic LLM query"
+)
+GAUGE_TTFB = metrics.get_meter(__name__).create_gauge(
+    "validator.entry_node.text.ttfb",
+    description="Time to first byte for LLM streaming for an organic LLM query"
 )
 
 def _construct_organic_message(payload: dict, job_id: str, task: str) -> str:
@@ -93,6 +97,7 @@ async def make_stream_organic_query(
     payload: dict[str, Any],
     task: str,
 ) -> AsyncGenerator[str, str]:
+    init_time = time.time()
     job_id = uuid.uuid4().hex
     organic_message = _construct_organic_message(payload=payload, job_id=job_id, task=task)
 
@@ -115,6 +120,7 @@ async def make_stream_organic_query(
     start_time = time.time()
     try:
         first_chunk = await asyncio.wait_for(_get_first_chunk(pubsub, job_id), timeout=2)
+        GAUGE_TTFB.set(time.time() - init_time, {"task": task})
     except asyncio.TimeoutError:
         logger.error(
             f"Query node down? Timed out waiting for the first chunk of results for job {job_id}. Task: {task}, model: {payload['model']}"
@@ -128,32 +134,71 @@ async def make_stream_organic_query(
     return _stream_results(pubsub, job_id, task, first_chunk, start_time)
 
 
-async def _handle_no_stream(text_generator: AsyncGenerator[str, str]) -> JSONResponse:
+async def _handle_no_stream(prompt_tokens: int, text_generator: AsyncGenerator[str, str]) -> JSONResponse:
     all_content = ""
+    out_counter = 0
     async for chunk in text_generator:
         chunks = load_sse_jsons(chunk)
         if isinstance(chunks, list):
             for chunk in chunks:
                 content = chunk["choices"][0]["delta"]["content"]
+                out_counter += 1
                 all_content += content
                 if content == "":
                     break
 
-    return JSONResponse({"choices": [{"message": {"content": all_content, "role": "assistant"}}]})
+    return JSONResponse(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": all_content,
+                            "role": "assistant"
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": out_counter,
+                    "total_tokens": prompt_tokens + out_counter
+                }
+            }
+        )
 
-
-async def _handle_no_stream_comp(text_generator: AsyncGenerator[str, str]) -> JSONResponse:
+async def _handle_no_stream_comp(prompt_tokens: int, text_generator: AsyncGenerator[str, str]) -> JSONResponse:
     all_content = ""
+    out_counter = 0
     async for chunk in text_generator:
         chunks = load_sse_jsons(chunk)
         if isinstance(chunks, list):
             for chunk in chunks:
                 content = chunk["choices"][0]["text"]
+                out_counter += 1
                 all_content += content
                 if content == "":
                     break
 
-    return JSONResponse({"choices": [{"message": {"content": all_content}}]})
+    return JSONResponse(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": all_content,
+                            "role": "assistant"
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": out_counter,
+                    "total_tokens": prompt_tokens + out_counter
+                }
+            }
+        )
 
 
 async def chat(
@@ -162,6 +207,7 @@ async def chat(
 ) -> StreamingResponse | JSONResponse:
     payload = utils.chat_to_payload(chat_request)
     payload.temperature = 0.5
+    prompt_tokens = int(sum(len(message.content) for message in payload.messages) // CHARACTER_TO_TOKEN_CONVERSION)
     
     try:
         text_generator = await make_stream_organic_query(
@@ -175,7 +221,7 @@ async def chat(
         if chat_request.stream:
             return StreamingResponse(text_generator, media_type="text/event-stream")
         else:
-            return await _handle_no_stream(text_generator)
+            return await _handle_no_stream(prompt_tokens, text_generator)
 
     except HTTPException as http_exc:
         COUNTER_TEXT_GENERATION_ERROR.add(1, {"task": payload.model, "kind": type(http_exc).__name__, "status_code": 500})
@@ -194,6 +240,7 @@ async def chat_comp(
 ) -> StreamingResponse | JSONResponse:
     payload = utils.chat_comp_to_payload(chat_request)
     payload.temperature = 0.5
+    prompt_tokens = int(len(payload.prompt) // CHARACTER_TO_TOKEN_CONVERSION)
     
     try:
         text_generator = await make_stream_organic_query(
@@ -207,7 +254,7 @@ async def chat_comp(
         if chat_request.stream:
             return StreamingResponse(text_generator, media_type="text/event-stream")
         else:
-            return await _handle_no_stream_comp(text_generator)
+            return await _handle_no_stream_comp(prompt_tokens, text_generator)
 
     except HTTPException as http_exc:
         COUNTER_TEXT_GENERATION_ERROR.add(1, {"task": payload.model, "kind": type(http_exc).__name__, "status_code": 500})

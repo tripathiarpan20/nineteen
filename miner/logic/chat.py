@@ -38,6 +38,10 @@ async def chat_stream(
             address = worker_config.LLAMA_3_2_3B_TEXT_COMP_WORKER_URL
         elif task_config.task == "chat-rogue-rose-103b-comp" and isinstance(decrypted_payload, payload_models.CompletionPayload):
             address = worker_config.CHAT_ROGUE_ROSE_103B_COMP_WORKER_URL
+        elif task_config.task == "chat-deepseek-r1-qwen-32b" and isinstance(decrypted_payload, payload_models.ChatPayload):
+            address = worker_config.DEEPSEEK_R1_QWEN_32B_TEXT_WORKER_URL
+        elif task_config.task == "chat-deepseek-r1-qwen-32b-comp" and isinstance(decrypted_payload, payload_models.CompletionPayload):
+            address = worker_config.DEEPSEEK_R1_QWEN_32B_TEXT_COMP_WORKER_URL
         # NOTE: adjust on validator UID basis by adding custom endpoints in worker_config init
         else:
             raise ValueError(f"Invalid model: {decrypted_payload.model}")
